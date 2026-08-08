@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../app/generated/prisma"
@@ -10,4 +5,167 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+enum AgentStatus {
+  ACTIVE
+  PAUSED
+  STOPPED
+}
+
+enum TopicStatus {
+  DISCOVERED
+  HELD
+  REJECTED
+  SKIPPED
+  PUBLISHED
+}
+
+enum MemoryTier {
+  SHORT_TERM
+  LONG_TERM
+}
+
+enum ActivityType {
+  AGENT_INITIALIZED
+  DISCOVERY_STARTED
+  DISCOVERY_COMPLETED
+  TOPIC_DISCOVERED
+  TOPIC_REJECTED
+  TOPIC_HELD
+  TOPIC_SKIPPED
+  TOPIC_SELECTED
+  POST_GENERATED
+  POST_PUBLISHED
+  MEMORY_CREATED
+  MEMORY_UPDATED
+  RUN_COMPLETED
+  RUN_FAILED
+}
+
+model Agent {
+  id            String      @id @default(uuid()) @db.Uuid
+  name          String
+  domain        String
+  status        AgentStatus @default(ACTIVE)
+  initializedAt DateTime?
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  topics       Topic[]
+  posts        Post[]
+  memories     Memory[]
+  activityLogs ActivityLog[]
+
+  @@index([status])
+  @@index([nextRunAt])
+}
+
+model Topic {
+  id      String @id @default(uuid()) @db.Uuid
+  agentId String @db.Uuid
+
+  canonicalKey String
+  title        String
+  summary      String?
+  url          String
+  sourceName   String
+  sourceType   String?
+  category     String?
+  tags         Json?
+
+  publishedAt  DateTime?
+  discoveredAt DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+
+  editorialScore Int?
+  status         TopicStatus @default(DISCOVERED)
+  decisionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  posts        Post[]
+  memories     Memory[]
+  activityLogs ActivityLog[]
+
+  @@unique([agentId, canonicalKey])
+  @@index([agentId, status])
+  @@index([agentId, editorialScore])
+  @@index([publishedAt])
+  @@index([lastSeenAt])
+}
+
+model Post {
+  id      String  @id @default(uuid()) @db.Uuid
+  agentId String  @db.Uuid
+  topicId String? @db.Uuid
+
+  text      String
+  rationale String
+  sources   Json
+
+  createdAt DateTime @default(now())
+
+  agent    Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  topic    Topic?   @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  memories Memory[]
+
+  @@index([agentId, createdAt])
+  @@index([topicId])
+}
+
+model Memory {
+  id      String  @id @default(uuid()) @db.Uuid
+  agentId String  @db.Uuid
+  topicId String? @db.Uuid
+  postId  String? @db.Uuid
+
+  tier             MemoryTier
+  topicKey         String
+  summary          String
+  importantPoints  Json?
+  keywords         Json?
+  editorialOpinion String?
+
+  fullPost String?
+  sources  Json?
+
+  lastSeenAt      DateTime
+  lastPublishedAt DateTime?
+  expiresAt       DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  topic Topic? @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  post  Post?  @relation(fields: [postId], references: [id], onDelete: SetNull)
+
+  @@index([agentId, topicKey])
+  @@index([agentId, tier])
+  @@index([expiresAt])
+  @@index([lastSeenAt])
+}
+
+model ActivityLog {
+  id      String  @id @default(uuid()) @db.Uuid
+  agentId String  @db.Uuid
+  topicId String? @db.Uuid
+
+  type     ActivityType
+  message  String
+  score    Int?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  agent Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  topic Topic? @relation(fields: [topicId], references: [id], onDelete: SetNull)
+
+  @@index([agentId, createdAt])
+  @@index([agentId, type])
 }
