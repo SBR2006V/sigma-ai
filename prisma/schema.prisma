@@ -13,6 +13,12 @@ enum AgentStatus {
   STOPPED
 }
 
+enum RunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 enum TopicStatus {
   DISCOVERED
   HELD
@@ -58,6 +64,7 @@ model Agent {
   posts        Post[]
   memories     Memory[]
   activityLogs ActivityLog[]
+  runs         AgentRun[]
 
   @@index([status])
   @@index([nextRunAt])
@@ -155,6 +162,7 @@ model ActivityLog {
   id      String  @id @default(uuid()) @db.Uuid
   agentId String  @db.Uuid
   topicId String? @db.Uuid
+  runId   String? @db.Uuid
 
   type     ActivityType
   message  String
@@ -163,9 +171,36 @@ model ActivityLog {
 
   createdAt DateTime @default(now())
 
-  agent Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  topic Topic? @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  agent Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  topic Topic?    @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  run   AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
 
   @@index([agentId, createdAt])
   @@index([agentId, type])
+  @@index([runId])
+}
+
+model AgentRun {
+  id      String    @id @default(uuid()) @db.Uuid
+  agentId String    @db.Uuid
+  status  RunStatus @default(RUNNING)
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  topicsDiscovered Int @default(0)
+  topicsRejected   Int @default(0)
+  topicsHeld       Int @default(0)
+  topicsPublished  Int @default(0)
+
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  activityLogs ActivityLog[]
+
+  @@index([agentId, startedAt])
+  @@index([agentId, status])
 }
