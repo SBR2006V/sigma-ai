@@ -6,6 +6,7 @@ import { dedupeTopics } from "./dedupe";
 import { filterMaterialDelta } from "./material-delta";
 import { filterRelevantTopics } from "./relevance";
 import { rankEditorialTopics } from "./editorial";
+import { selectTopics } from "./selection";
 
 export async function discoverTopics() {
   const results = await Promise.allSettled(
@@ -37,11 +38,14 @@ export async function discoverTopics() {
   const deltaCheckedTopics =
     await filterMaterialDelta(dedupedTopics);
 
-  // Stage 5: apply the existing relevance filter.
+  // Stage 5: apply relevance filtering.
   const relevantTopics =
     filterRelevantTopics(deltaCheckedTopics);
 
-  // Stage 6: deterministically score and rank
-  // the surviving editorial candidates.
-  return rankEditorialTopics(relevantTopics);
+  // Stage 6: score and rank editorial value.
+  const editorialTopics =
+    rankEditorialTopics(relevantTopics);
+
+  // Stage 7: make the deterministic action decision.
+  return selectTopics(editorialTopics);
 }
