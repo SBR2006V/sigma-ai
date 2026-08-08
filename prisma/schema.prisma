@@ -32,6 +32,15 @@ enum MemoryTier {
   LONG_TERM
 }
 
+// NEW. Editorial outcome represented by a Memory row.
+// Enables reject-cooldown without a separate table.
+// Defaults to PUBLISHED to match the semantics existing rows already had.
+enum MemoryDecision {
+  PUBLISHED
+  PUBLISHED_DEFERRED
+  REJECTED
+}
+
 enum ActivityType {
   AGENT_INITIALIZED
   DISCOVERY_STARTED
@@ -57,8 +66,15 @@ model Agent {
   initializedAt DateTime?
   lastRunAt     DateTime?
   nextRunAt     DateTime?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+
+  // NEW. Outcome of the most recent worker cycle, distinct from `status`.
+  // status        = whether the agent is supposed to be running
+  // lastRunStatus = what happened last time it actually ran
+  // e.g. "SUCCESS_PUBLISHED" | "SUCCESS_NO_PUBLISH" | "FAILED" | "PARTIAL"
+  lastRunStatus String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   topics       Topic[]
   posts        Post[]
@@ -115,6 +131,13 @@ model Post {
   rationale String
   sources   Json
 
+  // NEW. Structural fields for the "why selected / why now" editorial
+  // requirement. Nullable because existing rows predate them; new writes
+  // from the generation stage should always populate all three.
+  title       String?
+  whySelected String?
+  whyNow      String?
+
   createdAt DateTime @default(now())
 
   agent    Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -141,6 +164,21 @@ model Memory {
   fullPost String?
   sources  Json?
 
+  // NEW. See MemoryDecision above. Lets a Memory row represent a
+  // REJECTED topic (cooldown) or a PUBLISHED_DEFERRED topic (approved
+  // this cycle but not the one post selected for publishing), not just
+  // a published one.
+  decision MemoryDecision @default(PUBLISHED)
+
+  // NEW. Flattened known+pattern entities for the GIN-indexed cross-run
+  // dedup/follow-up lookup, plus the full structured breakdown.
+  entities    String[] @default([])
+  entitiesRaw Json?
+
+  // NEW. Set when a SHORT_TERM row has been compacted into a
+  // LONG_TERM row (tier-1 -> tier-2 lifecycle).
+  compactedAt DateTime?
+
   lastSeenAt      DateTime
   lastPublishedAt DateTime?
   expiresAt       DateTime
@@ -156,6 +194,8 @@ model Memory {
   @@index([agentId, tier])
   @@index([expiresAt])
   @@index([lastSeenAt])
+  @@index([decision, expiresAt])
+  @@index([entities], type: Gin)
 }
 
 model ActivityLog {
@@ -203,4 +243,27 @@ model AgentRun {
 
   @@index([agentId, startedAt])
   @@index([agentId, status])
+}
+
+// NEW. Database-backed run lease so multiple Render worker instances
+// cannot execute the same 20-minute cycle concurrently. Single global
+// row (id = "singleton"). Not scoped to agentId -- this is a
+// single-persona hackathon build; add agentId here if/when multiple
+// agents need to run concurrently.
+model WorkerLease {
+  id             String    @id @default("singleton")
+  lockedBy       String?
+  lockedAt       DateTime?
+  leaseExpiresAt DateTime?
+}
+
+// NEW. MVP entity dictionary for deterministic entity extraction.
+// Curated/seeded manually for now -- no auto-promotion logic yet
+// (explicitly deferred per approved architecture).
+model KnownEntity {
+  id            String   @id @default(uuid()) @db.Uuid
+  canonicalName String   @unique
+  aliases       String[] @default([])
+  category      String?
+  createdAt     DateTime @default(now())
 }
