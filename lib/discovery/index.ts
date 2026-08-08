@@ -7,6 +7,7 @@ import { filterMaterialDelta } from "./material-delta";
 import { filterRelevantTopics } from "./relevance";
 import { rankEditorialTopics } from "./editorial";
 import { selectTopics } from "./selection";
+import { filterEvidence } from "./evidence";
 
 export async function discoverTopics() {
   const results = await Promise.allSettled(
@@ -42,10 +43,18 @@ export async function discoverTopics() {
   const relevantTopics =
     filterRelevantTopics(deltaCheckedTopics);
 
-  // Stage 6: score and rank editorial value.
-  const editorialTopics =
+  // Stage 6: score topics editorially.
+  const rankedTopics =
     rankEditorialTopics(relevantTopics);
 
-  // Stage 7: make the deterministic action decision.
-  return selectTopics(editorialTopics);
+  // Stage 7: deterministically select candidates.
+  const selectedTopics =
+    selectTopics(rankedTopics);
+
+  // Stage 8: verify that selected topics contain
+  // enough actual evidence for grounded generation.
+  const evidenceCheckedTopics =
+    filterEvidence(selectedTopics);
+
+  return evidenceCheckedTopics;
 }
