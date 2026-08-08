@@ -131,10 +131,13 @@ Do not wrap the JSON in markdown fences.
 `;
 
   const completion = await groq.chat.completions.create({
-    model: MODEL,
-    temperature: 0.2,
-    max_tokens: 1200,
-    messages: [
+  model: MODEL,
+  temperature: 0.2,
+  max_tokens: 1200,
+  response_format: {
+    type: "json_object",
+  },
+  messages: [
       {
         role: "system",
         content:
