@@ -1,5 +1,4 @@
 import Parser from "rss-parser";
-
 import type { NewsSource } from "./sources";
 
 const parser = new Parser();
@@ -13,38 +12,99 @@ export interface RawTopic {
   publishedAt: Date | null;
 }
 
-function cleanSummary(summary: string, sourceName: string): string {
-  const cleaned = summary.trim();
+function stripHtml(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  if (sourceName !== "Hacker News") {
-    return cleaned;
-  }
+function removeMarkdownLinks(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  const articleUrlIndex = cleaned.indexOf("Article URL:");
-  const commentsUrlIndex = cleaned.indexOf("Comments URL:");
+function cleanHackerNewsSummary(summary: string): string {
+  let cleaned = stripHtml(summary);
 
-  if (articleUrlIndex === -1) {
-    return cleaned;
-  }
+  /*
+   * HN RSS frequently produces metadata such as:
+   *
+   * Article URL: https://...
+   * Comments URL: https://...
+   * Points: 123
+   * # Comments: 45
+   *
+   * These are not article evidence.
+   */
 
-  const start = articleUrlIndex + "Article URL:".length;
+  cleaned = cleaned
+    .replace(/Article URL:\s*/gi, " ")
+    .replace(/Comments URL:\s*/gi, " ")
+    .replace(/Points:\s*\d+/gi, " ")
+    .replace(/#\s*Comments:\s*\d+/gi, " ")
+    .replace(/\bComments:\s*\d+/gi, " ")
+    .replace(/\bPoints:\s*\d+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const end =
-    commentsUrlIndex !== -1
-      ? commentsUrlIndex
-      : cleaned.length;
+  /*
+   * If what remains is essentially only URLs,
+   * treat it as having no usable evidence.
+   */
+  const withoutUrls = cleaned
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const articleUrl = cleaned.slice(start, end).trim();
-
-  if (!articleUrl) {
+  if (!withoutUrls) {
     return "";
   }
 
-  return articleUrl;
+  return removeMarkdownLinks(cleaned);
+}
+
+function cleanSummary(summary: string, sourceName: string): string {
+  const cleaned = stripHtml(summary);
+
+  if (sourceName === "Hacker News") {
+    return cleanHackerNewsSummary(cleaned);
+  }
+
+  return removeMarkdownLinks(cleaned);
+}
+
+function getItemSummary(item: Parser.Item): string {
+  /*
+   * Prefer contentSnippet because it is generally cleaner
+   * for RSS feeds intended for text processing.
+   */
+  if (item.contentSnippet?.trim()) {
+    return item.contentSnippet.trim();
+  }
+
+  if (item.content?.trim()) {
+    return item.content.trim();
+  }
+
+  if (item.summary?.trim()) {
+    return item.summary.trim();
+  }
+
+  return "";
 }
 
 export async function fetchRssSource(
-  source: NewsSource
+  source: NewsSource,
 ): Promise<RawTopic[]> {
   const feed = await parser.parseURL(source.url);
 
@@ -56,19 +116,28 @@ export async function fetchRssSource(
           ? new Date(item.pubDate)
           : null;
 
-      const rawSummary =
-        item.contentSnippet?.trim() ??
-        item.content?.trim() ??
-        "";
+      const title = item.title?.trim() ?? "";
+      const url = item.link?.trim() ?? "";
+
+      const rawSummary = getItemSummary(item);
+
+      const summary = cleanSummary(
+        rawSummary,
+        source.name,
+      );
 
       return {
-        title: item.title?.trim() ?? "",
-        summary: cleanSummary(rawSummary, source.name),
-        url: item.link?.trim() ?? "",
+        title,
+        summary,
+        url,
         sourceName: source.name,
         sourceType: source.type,
         publishedAt,
       };
     })
-    .filter((item) => item.title && item.url);
+    .filter(
+      (item) =>
+        item.title.length > 0 &&
+        item.url.length > 0,
+    );
 }

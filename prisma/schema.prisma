@@ -7,6 +7,165 @@ datasource db {
   provider = "postgresql"
 }
 
+model Agent {
+  id            String        @id @default(uuid()) @db.Uuid
+  name          String
+  domain        String
+  status        AgentStatus   @default(ACTIVE)
+  initializedAt DateTime?
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  lastRunStatus String?
+  activityLogs  ActivityLog[]
+  runs          AgentRun[]
+  memories      Memory[]
+  posts         Post[]
+  topics        Topic[]
+
+  @@index([status])
+  @@index([nextRunAt])
+}
+
+model Topic {
+  id             String        @id @default(uuid()) @db.Uuid
+  agentId        String        @db.Uuid
+  canonicalKey   String
+  title          String
+  summary        String?
+  url            String
+  sourceName     String
+  sourceType     String?
+  category       String?
+  tags           Json?
+  publishedAt    DateTime?
+  discoveredAt   DateTime      @default(now())
+  lastSeenAt     DateTime      @default(now())
+  editorialScore Int?
+  status         TopicStatus   @default(DISCOVERED)
+  decisionReason String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  activityLogs   ActivityLog[]
+  memories       Memory[]
+  posts          Post[]
+  agent          Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, canonicalKey])
+  @@index([agentId, status])
+  @@index([agentId, editorialScore])
+  @@index([publishedAt])
+  @@index([lastSeenAt])
+}
+
+model Post {
+  id          String   @id @default(uuid()) @db.Uuid
+  agentId     String   @db.Uuid
+  topicId     String?  @db.Uuid
+  text        String
+  rationale   String
+  sources     Json
+  createdAt   DateTime @default(now())
+  title       String?
+  whyNow      String?
+  whySelected String?
+  memories    Memory[]
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  topic       Topic?   @relation(fields: [topicId], references: [id])
+
+  @@index([agentId, createdAt])
+  @@index([topicId])
+}
+
+model Memory {
+  id               String         @id @default(uuid()) @db.Uuid
+  agentId          String         @db.Uuid
+  topicId          String?        @db.Uuid
+  postId           String?        @db.Uuid
+  tier             MemoryTier
+  topicKey         String
+  summary          String
+  importantPoints  Json?
+  keywords         Json?
+  editorialOpinion String?
+  fullPost         String?
+  sources          Json?
+  lastSeenAt       DateTime
+  lastPublishedAt  DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  compactedAt      DateTime?
+  decision         MemoryDecision @default(PUBLISHED)
+  entities         String[]       @default([])
+  entitiesRaw      Json?
+  agent            Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  post             Post?          @relation(fields: [postId], references: [id])
+  topic            Topic?         @relation(fields: [topicId], references: [id])
+
+  @@index([agentId, topicKey])
+  @@index([agentId, tier])
+  @@index([expiresAt])
+  @@index([lastSeenAt])
+  @@index([decision, expiresAt])
+  @@index([entities], type: Gin)
+}
+
+model ActivityLog {
+  id        String       @id @default(uuid()) @db.Uuid
+  agentId   String       @db.Uuid
+  topicId   String?      @db.Uuid
+  type      ActivityType
+  message   String
+  score     Int?
+  metadata  Json?
+  createdAt DateTime     @default(now())
+  runId     String?      @db.Uuid
+  agent     Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  run       AgentRun?    @relation(fields: [runId], references: [id])
+  topic     Topic?       @relation(fields: [topicId], references: [id])
+
+  @@index([agentId, createdAt])
+  @@index([agentId, type])
+  @@index([runId])
+}
+
+model AgentRun {
+  id               String        @id @default(uuid()) @db.Uuid
+  agentId          String        @db.Uuid
+  status           RunStatus     @default(RUNNING)
+  startedAt        DateTime      @default(now())
+  completedAt      DateTime?
+  topicsDiscovered Int           @default(0)
+  topicsRejected   Int           @default(0)
+  topicsHeld       Int           @default(0)
+  topicsPublished  Int           @default(0)
+  errorMessage     String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  activityLogs     ActivityLog[]
+  agent            Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, startedAt])
+  @@index([agentId, status])
+}
+
+model WorkerLease {
+  id             String    @id @default("singleton")
+  lockedBy       String?
+  lockedAt       DateTime?
+  leaseExpiresAt DateTime?
+}
+
+model KnownEntity {
+  id            String   @id @default(uuid()) @db.Uuid
+  canonicalName String   @unique
+  aliases       String[] @default([])
+  category      String?
+  createdAt     DateTime @default(now())
+}
+
 enum AgentStatus {
   ACTIVE
   PAUSED
@@ -32,9 +191,6 @@ enum MemoryTier {
   LONG_TERM
 }
 
-// NEW. Editorial outcome represented by a Memory row.
-// Enables reject-cooldown without a separate table.
-// Defaults to PUBLISHED to match the semantics existing rows already had.
 enum MemoryDecision {
   PUBLISHED
   PUBLISHED_DEFERRED
@@ -56,214 +212,4 @@ enum ActivityType {
   MEMORY_UPDATED
   RUN_COMPLETED
   RUN_FAILED
-}
-
-model Agent {
-  id            String      @id @default(uuid()) @db.Uuid
-  name          String
-  domain        String
-  status        AgentStatus @default(ACTIVE)
-  initializedAt DateTime?
-  lastRunAt     DateTime?
-  nextRunAt     DateTime?
-
-  // NEW. Outcome of the most recent worker cycle, distinct from `status`.
-  // status        = whether the agent is supposed to be running
-  // lastRunStatus = what happened last time it actually ran
-  // e.g. "SUCCESS_PUBLISHED" | "SUCCESS_NO_PUBLISH" | "FAILED" | "PARTIAL"
-  lastRunStatus String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  topics       Topic[]
-  posts        Post[]
-  memories     Memory[]
-  activityLogs ActivityLog[]
-  runs         AgentRun[]
-
-  @@index([status])
-  @@index([nextRunAt])
-}
-
-model Topic {
-  id      String @id @default(uuid()) @db.Uuid
-  agentId String @db.Uuid
-
-  canonicalKey String
-  title        String
-  summary      String?
-  url          String
-  sourceName   String
-  sourceType   String?
-  category     String?
-  tags         Json?
-
-  publishedAt  DateTime?
-  discoveredAt DateTime  @default(now())
-  lastSeenAt   DateTime  @default(now())
-
-  editorialScore Int?
-  status         TopicStatus @default(DISCOVERED)
-  decisionReason String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  posts        Post[]
-  memories     Memory[]
-  activityLogs ActivityLog[]
-
-  @@unique([agentId, canonicalKey])
-  @@index([agentId, status])
-  @@index([agentId, editorialScore])
-  @@index([publishedAt])
-  @@index([lastSeenAt])
-}
-
-model Post {
-  id      String  @id @default(uuid()) @db.Uuid
-  agentId String  @db.Uuid
-  topicId String? @db.Uuid
-
-  text      String
-  rationale String
-  sources   Json
-
-  // NEW. Structural fields for the "why selected / why now" editorial
-  // requirement. Nullable because existing rows predate them; new writes
-  // from the generation stage should always populate all three.
-  title       String?
-  whySelected String?
-  whyNow      String?
-
-  createdAt DateTime @default(now())
-
-  agent    Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  topic    Topic?   @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  memories Memory[]
-
-  @@index([agentId, createdAt])
-  @@index([topicId])
-}
-
-model Memory {
-  id      String  @id @default(uuid()) @db.Uuid
-  agentId String  @db.Uuid
-  topicId String? @db.Uuid
-  postId  String? @db.Uuid
-
-  tier             MemoryTier
-  topicKey         String
-  summary          String
-  importantPoints  Json?
-  keywords         Json?
-  editorialOpinion String?
-
-  fullPost String?
-  sources  Json?
-
-  // NEW. See MemoryDecision above. Lets a Memory row represent a
-  // REJECTED topic (cooldown) or a PUBLISHED_DEFERRED topic (approved
-  // this cycle but not the one post selected for publishing), not just
-  // a published one.
-  decision MemoryDecision @default(PUBLISHED)
-
-  // NEW. Flattened known+pattern entities for the GIN-indexed cross-run
-  // dedup/follow-up lookup, plus the full structured breakdown.
-  entities    String[] @default([])
-  entitiesRaw Json?
-
-  // NEW. Set when a SHORT_TERM row has been compacted into a
-  // LONG_TERM row (tier-1 -> tier-2 lifecycle).
-  compactedAt DateTime?
-
-  lastSeenAt      DateTime
-  lastPublishedAt DateTime?
-  expiresAt       DateTime
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  agent Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  topic Topic? @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  post  Post?  @relation(fields: [postId], references: [id], onDelete: SetNull)
-
-  @@index([agentId, topicKey])
-  @@index([agentId, tier])
-  @@index([expiresAt])
-  @@index([lastSeenAt])
-  @@index([decision, expiresAt])
-  @@index([entities], type: Gin)
-}
-
-model ActivityLog {
-  id      String  @id @default(uuid()) @db.Uuid
-  agentId String  @db.Uuid
-  topicId String? @db.Uuid
-  runId   String? @db.Uuid
-
-  type     ActivityType
-  message  String
-  score    Int?
-  metadata Json?
-
-  createdAt DateTime @default(now())
-
-  agent Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  topic Topic?    @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  run   AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
-
-  @@index([agentId, createdAt])
-  @@index([agentId, type])
-  @@index([runId])
-}
-
-model AgentRun {
-  id      String    @id @default(uuid()) @db.Uuid
-  agentId String    @db.Uuid
-  status  RunStatus @default(RUNNING)
-
-  startedAt   DateTime  @default(now())
-  completedAt DateTime?
-
-  topicsDiscovered Int @default(0)
-  topicsRejected   Int @default(0)
-  topicsHeld       Int @default(0)
-  topicsPublished  Int @default(0)
-
-  errorMessage String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  activityLogs ActivityLog[]
-
-  @@index([agentId, startedAt])
-  @@index([agentId, status])
-}
-
-// NEW. Database-backed run lease so multiple Render worker instances
-// cannot execute the same 20-minute cycle concurrently. Single global
-// row (id = "singleton"). Not scoped to agentId -- this is a
-// single-persona hackathon build; add agentId here if/when multiple
-// agents need to run concurrently.
-model WorkerLease {
-  id             String    @id @default("singleton")
-  lockedBy       String?
-  lockedAt       DateTime?
-  leaseExpiresAt DateTime?
-}
-
-// NEW. MVP entity dictionary for deterministic entity extraction.
-// Curated/seeded manually for now -- no auto-promotion logic yet
-// (explicitly deferred per approved architecture).
-model KnownEntity {
-  id            String   @id @default(uuid()) @db.Uuid
-  canonicalName String   @unique
-  aliases       String[] @default([])
-  category      String?
-  createdAt     DateTime @default(now())
 }

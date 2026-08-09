@@ -33,6 +33,10 @@ const STOP_WORDS = new Set([
   "new",
 ]);
 
+/*
+ * Jaccard similarity below this value means the candidate
+ * contains substantially different information.
+ */
 const MATERIAL_DELTA_THRESHOLD = 0.18;
 
 export type MaterialDeltaDecision =
@@ -63,7 +67,7 @@ function normalizeText(text: string): string {
 function getWords(text: string): Set<string> {
   return new Set(
     normalizeText(text)
-      .split(" ")
+      .split(/\s+/)
       .filter(
         (word) =>
           word.length >= 4 &&
@@ -76,11 +80,8 @@ function wordSimilarity(
   candidate: string,
   memory: string,
 ): number {
-  const candidateWords =
-    getWords(candidate);
-
-  const memoryWords =
-    getWords(memory);
+  const candidateWords = getWords(candidate);
+  const memoryWords = getWords(memory);
 
   if (
     candidateWords.size === 0 ||
@@ -111,23 +112,113 @@ function getTopicEntities(
   topic: DedupedTopic,
 ): string[] {
   return [
-    ...topic.entities.known,
-    ...topic.entities.patterns,
+    ...new Set([
+      ...topic.entities.known,
+      ...topic.entities.patterns,
+    ]),
   ];
+}
+
+function normalizeEntity(
+  entity: string,
+): string {
+  return normalizeText(entity);
+}
+
+function extractMemoryEntities(memory: {
+  entities: string[];
+  entitiesRaw: unknown;
+}): string[] {
+  if (memory.entities.length > 0) {
+    return [
+      ...new Set(
+        memory.entities
+          .filter(
+            (entity): entity is string =>
+              typeof entity === "string",
+          )
+          .map(normalizeEntity)
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  /*
+   * Backward compatibility for Memory rows created
+   * before the flattened entities field existed.
+   */
+  if (
+    memory.entitiesRaw &&
+    typeof memory.entitiesRaw === "object"
+  ) {
+    const raw = memory.entitiesRaw as {
+      known?: unknown;
+      patterns?: unknown;
+    };
+
+    const known = Array.isArray(raw.known)
+      ? raw.known.filter(
+          (
+            value,
+          ): value is string =>
+            typeof value === "string",
+        )
+      : [];
+
+    const patterns = Array.isArray(raw.patterns)
+      ? raw.patterns.filter(
+          (
+            value,
+          ): value is string =>
+            typeof value === "string",
+        )
+      : [];
+
+    return [
+      ...new Set(
+        [...known, ...patterns]
+          .map(normalizeEntity)
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  return [];
 }
 
 function extractNewWords(
   candidate: string,
   memory: string,
 ): string[] {
-  const candidateWords =
-    getWords(candidate);
-
-  const memoryWords =
-    getWords(memory);
+  const candidateWords = getWords(candidate);
+  const memoryWords = getWords(memory);
 
   return [...candidateWords].filter(
     (word) => !memoryWords.has(word),
+  );
+}
+
+function getNewEntities(
+  topic: DedupedTopic,
+  memory: {
+    entities: string[];
+    entitiesRaw: unknown;
+  },
+): string[] {
+  const candidateEntities = [
+    ...new Set(
+      getTopicEntities(topic)
+        .map(normalizeEntity)
+        .filter(Boolean),
+    ),
+  ];
+
+  const memoryEntities = new Set(
+    extractMemoryEntities(memory),
+  );
+
+  return candidateEntities.filter(
+    (entity) => !memoryEntities.has(entity),
   );
 }
 
@@ -135,9 +226,9 @@ export async function evaluateMaterialDelta(
   topic: DedupedTopic,
 ): Promise<MaterialDeltaResult> {
   /*
-   * A UNIQUE topic has no previous memory to compare
-   * against. It is therefore treated as material by
-   * default and continues through the pipeline.
+   * UNIQUE topics have no previous memory to compare
+   * against. They are therefore considered material
+   * by default.
    */
   if (
     topic.dedupe.decision !==
@@ -146,7 +237,8 @@ export async function evaluateMaterialDelta(
   ) {
     return {
       decision: "MATERIAL_DELTA",
-      reason: "not_a_follow_up_candidate",
+      reason:
+        "not_a_follow_up_candidate",
       similarity: 0,
       newInformation: [],
     };
@@ -162,7 +254,6 @@ export async function evaluateMaterialDelta(
         topicKey: true,
         summary: true,
         importantPoints: true,
-        fullPost: true,
         entities: true,
         entitiesRaw: true,
         createdAt: true,
@@ -171,9 +262,10 @@ export async function evaluateMaterialDelta(
     });
 
   /*
-   * The memory may have disappeared between the
-   * dedupe query and this comparison. In that case,
-   * don't discard the topic.
+   * The memory may have disappeared between
+   * dedupe and material-delta evaluation.
+   *
+   * Do not discard the candidate in that case.
    */
   if (!memory) {
     return {
@@ -185,6 +277,16 @@ export async function evaluateMaterialDelta(
     };
   }
 
+  /*
+   * IMPORTANT:
+   *
+   * Compare source-derived candidate information
+   * against source-derived memory information.
+   *
+   * Do NOT include fullPost here because that is
+   * generated editorial prose and can distort the
+   * similarity calculation.
+   */
   const candidateText = [
     topic.title,
     topic.summary,
@@ -193,9 +295,6 @@ export async function evaluateMaterialDelta(
   const memoryText = [
     memory.topicKey,
     memory.summary,
-    typeof memory.fullPost === "string"
-      ? memory.fullPost
-      : "",
   ].join(" ");
 
   const similarity = wordSimilarity(
@@ -209,24 +308,18 @@ export async function evaluateMaterialDelta(
       memoryText,
     );
 
-  const candidateEntities =
-    new Set(getTopicEntities(topic));
-
-  const memoryEntities =
-    new Set(memory.entities);
-
   const newEntities =
-    [...candidateEntities].filter(
-      (entity) =>
-        !memoryEntities.has(entity),
+    getNewEntities(
+      topic,
+      memory,
     );
 
   /*
-   * A follow-up is materially new when:
+   * A follow-up is considered materially new when:
    *
-   * 1. It introduces a new entity, OR
-   * 2. Its wording contains enough new information
-   *    to indicate a substantially different update.
+   * 1. It introduces a genuinely new entity, OR
+   * 2. Its wording is sufficiently different from
+   *    the previous source-derived memory.
    */
   if (newEntities.length > 0) {
     return {
@@ -266,8 +359,7 @@ export async function evaluateMaterialDelta(
 export async function filterMaterialDelta(
   topics: DedupedTopic[],
 ): Promise<MaterialDeltaTopic[]> {
-  const results: MaterialDeltaTopic[] =
-    [];
+  const results: MaterialDeltaTopic[] = [];
 
   for (const topic of topics) {
     const materialDelta =
@@ -276,11 +368,11 @@ export async function filterMaterialDelta(
       );
 
     /*
-     * Only remove a topic when we have actually
-     * determined that it is a redundant follow-up.
+     * Only remove a topic when it is a follow-up
+     * candidate and we have explicitly determined
+     * that it contains no material new information.
      *
-     * UNIQUE topics always receive a MATERIAL_DELTA
-     * result and continue.
+     * UNIQUE topics always continue.
      */
     if (
       topic.dedupe.decision ===

@@ -1,9 +1,14 @@
 import { prisma } from "@/lib/db";
 import { discoverTopics } from "@/lib/discovery";
 import { generateTopicContent } from "@/lib/discovery/generator";
+import {
+  acquireWorkerLease,
+  releaseWorkerLease,
+} from "./lease";
 
 const RUN_INTERVAL_MS = 20 * 60 * 1000;
-const SHORT_TERM_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+const SHORT_TERM_EXPIRY_MS =
+  7 * 24 * 60 * 60 * 1000;
 
 export type AgentRunResult = {
   runId: string;
@@ -17,13 +22,49 @@ export type AgentRunResult = {
   error?: string;
 };
 
-function canonicalizeTopicKey(title: string): string {
+function canonicalizeTopicKey(
+  title: string,
+): string {
   return title
     .toLowerCase()
     .replace(/https?:\/\/\S+/gi, " ")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 180);
+}
+
+/*
+ * Final publication eligibility check.
+ *
+ * If this agent has already published the exact same
+ * canonical topic, it must never be generated/published
+ * again.
+ *
+ * Material-delta logic is handled earlier in the discovery
+ * pipeline. It must NOT override this final publication guard.
+ */
+async function isPublicationEligible(
+  agentId: string,
+  topic: {
+    title: string;
+  },
+): Promise<boolean> {
+  const topicKey =
+    canonicalizeTopicKey(topic.title);
+
+  const existingPublishedMemory =
+    await prisma.memory.findFirst({
+      where: {
+        agentId,
+        topicKey,
+        decision: "PUBLISHED",
+      },
+      select: {
+        id: true,
+      },
+    });
+
+  return !existingPublishedMemory;
 }
 
 function buildWhySelected(topic: {
@@ -112,17 +153,50 @@ export async function runAgent(
     },
   });
 
+  const acquired =
+    await acquireWorkerLease(run.id);
+
+  if (!acquired) {
+    const completedAt = new Date();
+
+    await prisma.agentRun.update({
+      where: {
+        id: run.id,
+      },
+      data: {
+        status: "COMPLETED",
+        completedAt,
+        errorMessage:
+          "Another worker run is already in progress.",
+      },
+    });
+
+    return {
+      runId: run.id,
+      agentId,
+      status: "COMPLETED",
+      discovered: 0,
+      rejected: 0,
+      held: 0,
+      published: 0,
+      error:
+        "Another worker run is already in progress.",
+    };
+  }
+
   try {
     await prisma.activityLog.create({
       data: {
         agentId,
         runId: run.id,
         type: "DISCOVERY_STARTED",
-        message: "Agent discovery cycle started.",
+        message:
+          "Agent discovery cycle started.",
       },
     });
 
-    const discoveredTopics = await discoverTopics();
+    const discoveredTopics =
+      await discoverTopics(agentId);
 
     await prisma.activityLog.create({
       data: {
@@ -142,28 +216,26 @@ export async function runAgent(
     let held = 0;
     let published = 0;
 
-    /*
-     * Persist every discovered candidate as a Topic.
-     *
-     * We intentionally do this before generation so the database
-     * has a durable record of what the agent saw during this run.
-     */
     const persistedTopics: Array<{
       topic: (typeof discoveredTopics)[number];
       topicId: string;
     }> = [];
 
     for (const candidate of discoveredTopics) {
-      const topicKey = canonicalizeTopicKey(
-        candidate.title,
-      );
+      const topicKey =
+        canonicalizeTopicKey(
+          candidate.title,
+        );
 
       const status =
-        candidate.selection.decision === "REJECTED"
+        candidate.selection.decision ===
+        "REJECTED"
           ? "REJECTED"
-          : candidate.selection.decision === "HELD"
+          : candidate.selection.decision ===
+              "HELD"
             ? "HELD"
-            : candidate.evidence.decision === "INSUFFICIENT"
+            : candidate.evidence.decision ===
+                "INSUFFICIENT"
               ? "HELD"
               : "DISCOVERED";
 
@@ -175,41 +247,52 @@ export async function runAgent(
         held++;
       }
 
-      const topic = await prisma.topic.upsert({
-        where: {
-          agentId_canonicalKey: {
+      const topic =
+        await prisma.topic.upsert({
+          where: {
+            agentId_canonicalKey: {
+              agentId,
+              canonicalKey: topicKey,
+            },
+          },
+          update: {
+            title: candidate.title,
+            summary:
+              candidate.summary || null,
+            url: candidate.url,
+            sourceName:
+              candidate.sourceName,
+            sourceType:
+              candidate.sourceType,
+            publishedAt:
+              candidate.publishedAt,
+            lastSeenAt: new Date(),
+            editorialScore:
+              candidate.editorial.score,
+            status,
+            decisionReason:
+              candidate.selection.reason,
+          },
+          create: {
             agentId,
             canonicalKey: topicKey,
+            title: candidate.title,
+            summary:
+              candidate.summary || null,
+            url: candidate.url,
+            sourceName:
+              candidate.sourceName,
+            sourceType:
+              candidate.sourceType,
+            publishedAt:
+              candidate.publishedAt,
+            editorialScore:
+              candidate.editorial.score,
+            status,
+            decisionReason:
+              candidate.selection.reason,
           },
-        },
-        update: {
-          title: candidate.title,
-          summary: candidate.summary || null,
-          url: candidate.url,
-          sourceName: candidate.sourceName,
-          sourceType: candidate.sourceType,
-          publishedAt: candidate.publishedAt,
-          lastSeenAt: new Date(),
-          editorialScore: candidate.editorial.score,
-          status,
-          decisionReason:
-            candidate.selection.reason,
-        },
-        create: {
-          agentId,
-          canonicalKey: topicKey,
-          title: candidate.title,
-          summary: candidate.summary || null,
-          url: candidate.url,
-          sourceName: candidate.sourceName,
-          sourceType: candidate.sourceType,
-          publishedAt: candidate.publishedAt,
-          editorialScore: candidate.editorial.score,
-          status,
-          decisionReason:
-            candidate.selection.reason,
-        },
-      });
+        });
 
       persistedTopics.push({
         topic: candidate,
@@ -223,8 +306,10 @@ export async function runAgent(
             topicId: topic.id,
             runId: run.id,
             type: "TOPIC_REJECTED",
-            message: candidate.selection.reason,
-            score: candidate.editorial.score,
+            message:
+              candidate.selection.reason,
+            score:
+              candidate.editorial.score,
           },
         });
       } else if (status === "HELD") {
@@ -235,11 +320,12 @@ export async function runAgent(
             runId: run.id,
             type: "TOPIC_HELD",
             message:
-              candidate.evidence.decision ===
-              "INSUFFICIENT"
+              candidate.evidence
+                .decision === "INSUFFICIENT"
                 ? `Held because evidence was insufficient: ${candidate.evidence.reason}`
                 : candidate.selection.reason,
-            score: candidate.editorial.score,
+            score:
+              candidate.editorial.score,
           },
         });
       }
@@ -250,25 +336,72 @@ export async function runAgent(
      *
      * 1. SELECTED
      * 2. backed by SUFFICIENT evidence
+     * 3. not already published
      *
      * can reach Groq.
      */
-    const generationCandidates =
-      persistedTopics
-        .filter(
-          ({ topic }) =>
-            topic.selection.decision ===
-              "SELECTED" &&
-            topic.evidence.decision ===
-              "SUFFICIENT",
-        )
-        .sort(
-          (a, b) =>
-            b.topic.editorial.score -
-            a.topic.editorial.score,
+    const eligibleCandidates: Array<{
+      topic: (typeof persistedTopics)[number]["topic"];
+      topicId: string;
+    }> = [];
+
+    for (const candidate of persistedTopics) {
+      if (
+        candidate.topic.selection
+          .decision !== "SELECTED" ||
+        candidate.topic.evidence
+          .decision !== "SUFFICIENT"
+      ) {
+        continue;
+      }
+
+      const eligible =
+        await isPublicationEligible(
+          agentId,
+          candidate.topic,
         );
 
-    if (generationCandidates.length === 0) {
+      if (!eligible) {
+        await prisma.activityLog.create({
+          data: {
+            agentId,
+            topicId: candidate.topicId,
+            runId: run.id,
+            type: "TOPIC_SKIPPED",
+            message:
+              "Topic skipped because it was already published.",
+            score:
+              candidate.topic.editorial
+                .score,
+            metadata: JSON.parse(
+              JSON.stringify({
+                reason:
+                  "already_published_topic",
+                topicKey:
+                  canonicalizeTopicKey(
+                    candidate.topic.title,
+                  ),
+              }),
+            ),
+          },
+        });
+
+        continue;
+      }
+
+      eligibleCandidates.push(candidate);
+    }
+
+    const generationCandidates =
+      eligibleCandidates.sort(
+        (a, b) =>
+          b.topic.editorial.score -
+          a.topic.editorial.score,
+      );
+
+    if (
+      generationCandidates.length === 0
+    ) {
       const completedAt = new Date();
 
       await prisma.agentRun.update({
@@ -292,9 +425,11 @@ export async function runAgent(
         },
         data: {
           lastRunAt: completedAt,
-          lastRunStatus: "SUCCESS_NO_PUBLISH",
+          lastRunStatus:
+            "SUCCESS_NO_PUBLISH",
           nextRunAt: new Date(
-            Date.now() + RUN_INTERVAL_MS,
+            Date.now() +
+              RUN_INTERVAL_MS,
           ),
         },
       });
@@ -305,10 +440,11 @@ export async function runAgent(
           runId: run.id,
           type: "RUN_COMPLETED",
           message:
-            "Run completed. No candidate had sufficient evidence for publication.",
+            "Run completed. No eligible candidate was available for publication.",
           metadata: JSON.parse(
             JSON.stringify({
-              discovered: discoveredTopics.length,
+              discovered:
+                discoveredTopics.length,
               rejected,
               held,
               published: 0,
@@ -321,7 +457,8 @@ export async function runAgent(
         runId: run.id,
         agentId,
         status: "COMPLETED",
-        discovered: discoveredTopics.length,
+        discovered:
+          discoveredTopics.length,
         rejected,
         held,
         published: 0,
@@ -332,8 +469,113 @@ export async function runAgent(
      * MVP policy:
      * Generate and publish only the highest-ranked candidate.
      */
-    const selected = generationCandidates[0];
+    const selected =
+      generationCandidates[0];
+
     const topic = selected.topic;
+
+    /*
+     * FINAL PUBLICATION GUARD
+     *
+     * Re-check immediately before generation.
+     *
+     * This is deliberately a hard check:
+     * if the exact canonical topic has already been
+     * published, do not generate another post.
+     */
+    const finalPublicationEligible =
+      await isPublicationEligible(
+        agentId,
+        topic,
+      );
+
+    if (!finalPublicationEligible) {
+      await prisma.activityLog.create({
+        data: {
+          agentId,
+          topicId: selected.topicId,
+          runId: run.id,
+          type: "TOPIC_SKIPPED",
+          message:
+            "Topic skipped by final publication guard immediately before generation.",
+          score: topic.editorial.score,
+          metadata: JSON.parse(
+            JSON.stringify({
+              reason:
+                "already_published_before_generation",
+              topicKey:
+                canonicalizeTopicKey(
+                  topic.title,
+                ),
+            }),
+          ),
+        },
+      });
+
+      const completedAt = new Date();
+
+      await prisma.agentRun.update({
+        where: {
+          id: run.id,
+        },
+        data: {
+          status: "COMPLETED",
+          completedAt,
+          topicsDiscovered:
+            discoveredTopics.length,
+          topicsRejected: rejected,
+          topicsHeld: held,
+          topicsPublished: 0,
+        },
+      });
+
+      await prisma.agent.update({
+        where: {
+          id: agentId,
+        },
+        data: {
+          lastRunAt: completedAt,
+          lastRunStatus:
+            "SUCCESS_NO_PUBLISH",
+          nextRunAt: new Date(
+            Date.now() +
+              RUN_INTERVAL_MS,
+          ),
+        },
+      });
+
+      await prisma.activityLog.create({
+        data: {
+          agentId,
+          runId: run.id,
+          type: "RUN_COMPLETED",
+          message:
+            "Run completed. Final publication guard prevented duplicate generation.",
+          metadata: JSON.parse(
+            JSON.stringify({
+              discovered:
+                discoveredTopics.length,
+              rejected,
+              held,
+              published: 0,
+              skippedTopic:
+                topic.title,
+            }),
+          ),
+        },
+      });
+
+      return {
+        runId: run.id,
+        agentId,
+        status: "COMPLETED",
+        discovered:
+          discoveredTopics.length,
+        rejected,
+        held,
+        published: 0,
+      };
+    }
 
     await prisma.activityLog.create({
       data: {
@@ -349,8 +591,7 @@ export async function runAgent(
             rank: topic.selection.rank,
             selectionReason:
               topic.selection.reason,
-            evidence:
-              topic.evidence,
+            evidence: topic.evidence,
           }),
         ),
       },
@@ -377,9 +618,6 @@ export async function runAgent(
     const whyNow =
       buildWhyNow(topic);
 
-    /*
-     * Create the Post first, then link the Memory to it.
-     */
     const post = await prisma.post.create({
       data: {
         agentId,
@@ -395,7 +633,8 @@ export async function runAgent(
             {
               title: topic.title,
               url: topic.url,
-              sourceName: topic.sourceName,
+              sourceName:
+                topic.sourceName,
             },
           ]),
         ),
@@ -404,54 +643,59 @@ export async function runAgent(
 
     const now = new Date();
 
-    const memory = await prisma.memory.create({
-      data: {
-        agentId,
-        topicId: selected.topicId,
-        postId: post.id,
-        tier: "SHORT_TERM",
-        topicKey: canonicalizeTopicKey(
-          topic.title,
-        ),
-        summary: generated.summary,
-        importantPoints: JSON.parse(
-          JSON.stringify(
-            generated.importantPoints,
+    const memory =
+      await prisma.memory.create({
+        data: {
+          agentId,
+          topicId: selected.topicId,
+          postId: post.id,
+          tier: "SHORT_TERM",
+          topicKey:
+            canonicalizeTopicKey(
+              topic.title,
+            ),
+          summary: generated.summary,
+          importantPoints: JSON.parse(
+            JSON.stringify(
+              generated.importantPoints,
+            ),
           ),
-        ),
-        keywords: JSON.parse(
-          JSON.stringify(
-            generated.keywords,
+          keywords: JSON.parse(
+            JSON.stringify(
+              generated.keywords,
+            ),
           ),
-        ),
-        editorialOpinion:
-          generated.editorialOpinion,
-        fullPost: generated.fullPost,
-        sources: JSON.parse(
-          JSON.stringify([
-            {
-              title: topic.title,
-              url: topic.url,
-              sourceName: topic.sourceName,
-            },
-          ]),
-        ),
-        decision: "PUBLISHED",
-        entities: [
-          ...topic.entities.known,
-          ...topic.entities.patterns,
-        ],
-        entitiesRaw: JSON.parse(
-          JSON.stringify(topic.entities),
-        ),
-        lastSeenAt: now,
-        lastPublishedAt: now,
-        expiresAt: new Date(
-          now.getTime() +
-            SHORT_TERM_EXPIRY_MS,
-        ),
-      },
-    });
+          editorialOpinion:
+            generated.editorialOpinion,
+          fullPost: generated.fullPost,
+          sources: JSON.parse(
+            JSON.stringify([
+              {
+                title: topic.title,
+                url: topic.url,
+                sourceName:
+                  topic.sourceName,
+              },
+            ]),
+          ),
+          decision: "PUBLISHED",
+          entities: [
+            ...topic.entities.known,
+            ...topic.entities.patterns,
+          ],
+          entitiesRaw: JSON.parse(
+            JSON.stringify(
+              topic.entities,
+            ),
+          ),
+          lastSeenAt: now,
+          lastPublishedAt: now,
+          expiresAt: new Date(
+            now.getTime() +
+              SHORT_TERM_EXPIRY_MS,
+          ),
+        },
+      });
 
     await prisma.topic.update({
       where: {
@@ -524,9 +768,11 @@ export async function runAgent(
       },
       data: {
         lastRunAt: completedAt,
-        lastRunStatus: "SUCCESS_PUBLISHED",
+        lastRunStatus:
+          "SUCCESS_PUBLISHED",
         nextRunAt: new Date(
-          Date.now() + RUN_INTERVAL_MS,
+          Date.now() +
+            RUN_INTERVAL_MS,
         ),
       },
     });
@@ -540,7 +786,8 @@ export async function runAgent(
           "Agent run completed successfully with one published post.",
         metadata: JSON.parse(
           JSON.stringify({
-            discovered: discoveredTopics.length,
+            discovered:
+              discoveredTopics.length,
             rejected,
             held,
             published,
@@ -555,7 +802,8 @@ export async function runAgent(
       runId: run.id,
       agentId,
       status: "COMPLETED",
-      discovered: discoveredTopics.length,
+      discovered:
+        discoveredTopics.length,
       rejected,
       held,
       published,
@@ -593,7 +841,8 @@ export async function runAgent(
         agentId,
         runId: run.id,
         type: "RUN_FAILED",
-        message: `Agent run failed: ${message}`,
+        message:
+          `Agent run failed: ${message}`,
       },
     });
 
@@ -607,5 +856,7 @@ export async function runAgent(
       published: 0,
       error: message,
     };
+  } finally {
+    await releaseWorkerLease(run.id);
   }
 }

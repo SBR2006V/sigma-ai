@@ -1,36 +1,53 @@
-import type { RawTopic } from "./rss";
+import type { MaterialDeltaTopic } from "./material-delta";
 
-const RELEVANT_KEYWORDS = [
+const STRONG_RELEVANT_KEYWORDS = [
   "ai",
   "artificial intelligence",
   "machine learning",
   "deep learning",
   "llm",
   "large language model",
+  "generative ai",
+  "foundation model",
+  "language model",
+  "ai agent",
+  "ai agents",
+  "agentic",
+  "automation",
+  "openai",
+  "anthropic",
+  "google deepmind",
+  "hugging face",
+  "github",
+  "cloudflare",
+  "model",
+  "neural network",
+  "computer vision",
+  "natural language processing",
+  "nlp",
+];
+
+const TECH_RELEVANT_KEYWORDS = [
   "software",
   "developer",
+  "developers",
   "programming",
   "code",
   "coding",
   "open source",
-  "cloud",
-  "database",
-  "postgres",
-  "security",
-  "cybersecurity",
-  "cyber",
-  "reverse engineering",
-  "agent",
-  "agents",
-  "automation",
   "api",
   "framework",
   "infrastructure",
-  "computer",
-  "technology",
-  "tech",
+  "cloud",
+  "database",
+  "postgres",
+  "cybersecurity",
+  "cyber security",
+  "cyber",
+  "reverse engineering",
   "cpu",
   "processor",
+  "developer tools",
 ];
 
 const IRRELEVANT_KEYWORDS = [
@@ -42,8 +59,13 @@ const IRRELEVANT_KEYWORDS = [
   "fashion",
   "recipe",
   "cooking",
-  "politics",
   "movie",
+  "movies",
+  "politics",
+  "election",
+  "government",
+  "travel",
+  "real estate",
 ];
 
 function cleanText(text: string): string {
@@ -52,16 +74,23 @@ function cleanText(text: string): string {
     .replace(/article url:/gi, " ")
     .replace(/comments url:/gi, " ")
     .replace(/points:\s*\d+/gi, " ")
-    .replace(/# comments:\s*\d+/gi, " ")
+    .replace(/#\s*comments:\s*\d+/gi, " ")
+    .replace(/\bcomments:\s*\d+/gi, " ")
     .replace(/[^\p{L}\p{N}\s-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
 
-function containsKeyword(text: string, keywords: string[]): boolean {
+function containsKeyword(
+  text: string,
+  keywords: string[],
+): boolean {
   return keywords.some((keyword) => {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = keyword.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
 
     return new RegExp(
       `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,
@@ -70,24 +99,102 @@ function containsKeyword(text: string, keywords: string[]): boolean {
   });
 }
 
-export function filterRelevantTopics<T extends RawTopic>(
-  topics: T[],
-): T[] {
-  return topics.filter((topic) => {
-    const title = cleanText(topic.title);
-    const summary = cleanText(topic.summary);
+function isSubstantiveSummary(
+  summary: string,
+): boolean {
+  const cleaned = cleanText(summary);
 
-    const titleRelevant = containsKeyword(title, RELEVANT_KEYWORDS);
-    const summaryRelevant = containsKeyword(summary, RELEVANT_KEYWORDS);
+  if (!cleaned) {
+    return false;
+  }
 
-    const irrelevant =
-      containsKeyword(title, IRRELEVANT_KEYWORDS) ||
-      containsKeyword(summary, IRRELEVANT_KEYWORDS);
+  const words = cleaned
+    .split(/\s+/)
+    .filter(Boolean);
 
-    if (irrelevant) {
-      return false;
-    }
+  return words.length >= 8;
+}
 
-    return titleRelevant || summaryRelevant;
-  });
+function isRelevant(
+  topic: MaterialDeltaTopic,
+): boolean {
+  const title = cleanText(topic.title);
+  const summary = cleanText(topic.summary);
+
+  if (!title) {
+    return false;
+  }
+
+  const combined = `${title} ${summary}`;
+
+  if (
+    containsKeyword(
+      combined,
+      IRRELEVANT_KEYWORDS,
+    )
+  ) {
+    return false;
+  }
+
+  const strongInTitle = containsKeyword(
+    title,
+    STRONG_RELEVANT_KEYWORDS,
+  );
+
+  const strongInSummary = containsKeyword(
+    summary,
+    STRONG_RELEVANT_KEYWORDS,
+  );
+
+  const technicalInTitle = containsKeyword(
+    title,
+    TECH_RELEVANT_KEYWORDS,
+  );
+
+  const technicalInSummary = containsKeyword(
+    summary,
+    TECH_RELEVANT_KEYWORDS,
+  );
+
+  /*
+   * Strong AI/technology signal in the title.
+   *
+   * This intentionally does not require a substantive
+   * RSS summary. Weak RSS summaries are handled later
+   * by article extraction and evidence validation.
+   */
+  if (strongInTitle) {
+    return true;
+  }
+
+  /*
+   * Strong signal in the summary with enough
+   * substantive content.
+   */
+  if (
+    strongInSummary &&
+    isSubstantiveSummary(summary)
+  ) {
+    return true;
+  }
+
+  /*
+   * Technical topics require relevant signals
+   * in both title and summary.
+   */
+  if (
+    technicalInTitle &&
+    technicalInSummary &&
+    isSubstantiveSummary(summary)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function filterRelevantTopics(
+  topics: MaterialDeltaTopic[],
+): MaterialDeltaTopic[] {
+  return topics.filter(isRelevant);
 }

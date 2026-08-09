@@ -69,6 +69,10 @@ function normalizeText(text: string): string {
     .trim();
 }
 
+function normalizeUrl(url: string): string {
+  return url.trim().toLowerCase();
+}
+
 function getWords(text: string): Set<string> {
   return new Set(
     normalizeText(text)
@@ -81,7 +85,10 @@ function getWords(text: string): Set<string> {
   );
 }
 
-function titleSimilarity(a: RawTopic, b: RawTopic): number {
+function titleSimilarity(
+  a: RawTopic,
+  b: RawTopic,
+): number {
   const wordsA = getWords(a.title);
   const wordsB = getWords(b.title);
 
@@ -97,9 +104,14 @@ function titleSimilarity(a: RawTopic, b: RawTopic): number {
     }
   }
 
-  const union = new Set([...wordsA, ...wordsB]).size;
+  const union = new Set([
+    ...wordsA,
+    ...wordsB,
+  ]).size;
 
-  return union === 0 ? 0 : intersection / union;
+  return union === 0
+    ? 0
+    : intersection / union;
 }
 
 function sharedEntities(
@@ -116,7 +128,9 @@ function sharedEntities(
     ...b.entities.patterns,
   ]);
 
-  return [...aEntities].filter((entity) => bEntities.has(entity));
+  return [...aEntities].filter((entity) =>
+    bEntities.has(entity),
+  );
 }
 
 function isSameStory(
@@ -128,9 +142,13 @@ function isSameStory(
   similarity: number;
   sharedEntities: string[];
 } {
+  /*
+   * Exact URL match is the strongest possible
+   * duplicate signal within the current discovery batch.
+   */
   const sameUrl =
-    a.url.trim().toLowerCase() ===
-    b.url.trim().toLowerCase();
+    normalizeUrl(a.url) ===
+    normalizeUrl(b.url);
 
   if (sameUrl) {
     return {
@@ -145,47 +163,43 @@ function isSameStory(
   const entities = sharedEntities(a, b);
 
   /*
-   * Strong rule:
-   *
-   * Same strong entity + modest title similarity.
-   *
-   * This handles cross-source rewrites:
-   *
-   * OpenAI + Astra
-   *
-   * appearing in OpenAI and TechCrunch with different wording.
+   * Two or more shared entities are a strong
+   * cross-source story anchor.
    */
-  // Two or more shared entities are a strong cross-source story anchor.
-// This is especially important when different publishers use very
-// different headlines for the same event.
-if (entities.length >= 2) {
-  return {
-    duplicate: true,
-    reason: "multiple_shared_entities",
-    similarity,
-    sharedEntities: entities,
-  };
-}
-
-// A single shared entity is not enough by itself.
-// Require some title similarity to avoid merging unrelated stories
-// about the same company/model/platform.
-if (
-  entities.length === 1 &&
-  similarity >= ENTITY_TITLE_THRESHOLD
-) {
-  return {
-    duplicate: true,
-    reason: "shared_entity_and_title_similarity",
-    similarity,
-    sharedEntities: entities,
-  };
-}
+  if (entities.length >= 2) {
+    return {
+      duplicate: true,
+      reason: "multiple_shared_entities",
+      similarity,
+      sharedEntities: entities,
+    };
+  }
 
   /*
-   * Near-identical titles are enough even without entities.
+   * A single shared entity is not enough by itself.
+   * Require some title similarity to avoid merging
+   * unrelated stories about the same company/model.
    */
-  if (similarity >= TITLE_DUPLICATE_THRESHOLD) {
+  if (
+    entities.length === 1 &&
+    similarity >= ENTITY_TITLE_THRESHOLD
+  ) {
+    return {
+      duplicate: true,
+      reason:
+        "shared_entity_and_title_similarity",
+      similarity,
+      sharedEntities: entities,
+    };
+  }
+
+  /*
+   * Near-identical titles are enough even without
+   * recognized entities.
+   */
+  if (
+    similarity >= TITLE_DUPLICATE_THRESHOLD
+  ) {
     return {
       duplicate: true,
       reason: "high_title_similarity",
@@ -202,7 +216,9 @@ if (
   };
 }
 
-function sourceCredibility(sourceType?: string | null): number {
+function sourceCredibility(
+  sourceType?: string | null,
+): number {
   if (sourceType === "PRIMARY") {
     return 1;
   }
@@ -214,8 +230,11 @@ function isBetterTopic(
   a: EnrichedTopic,
   b: EnrichedTopic,
 ): boolean {
-  const credibilityA = sourceCredibility(a.sourceType);
-  const credibilityB = sourceCredibility(b.sourceType);
+  const credibilityA =
+    sourceCredibility(a.sourceType);
+
+  const credibilityB =
+    sourceCredibility(b.sourceType);
 
   if (credibilityA !== credibilityB) {
     return credibilityA > credibilityB;
@@ -239,12 +258,16 @@ function isBetterTopic(
   );
 }
 
-function getTopicEntities(topic: EnrichedTopic): string[] {
+function getTopicEntities(
+  topic: EnrichedTopic,
+): string[] {
   /*
    * Known entities are strong.
    * Pattern entities are weaker but still useful.
-   * Capitalized fallback entities are deliberately excluded from
-   * cross-run matching because they are heuristic guesses.
+   *
+   * Capitalized fallback entities are deliberately
+   * excluded from cross-run matching because they
+   * are heuristic guesses.
    */
   return [
     ...topic.entities.known,
@@ -261,8 +284,8 @@ function extractMemoryEntities(memory: {
   }
 
   /*
-   * Backward compatibility for Memory rows created before entities
-   * were introduced.
+   * Backward compatibility for Memory rows created
+   * before the flattened entities field existed.
    */
   if (
     memory.entitiesRaw &&
@@ -275,14 +298,20 @@ function extractMemoryEntities(memory: {
 
     const known = Array.isArray(raw.known)
       ? raw.known.filter(
-          (value): value is string =>
+          (
+            value,
+          ): value is string =>
             typeof value === "string",
         )
       : [];
 
-    const patterns = Array.isArray(raw.patterns)
+    const patterns = Array.isArray(
+      raw.patterns,
+    )
       ? raw.patterns.filter(
-          (value): value is string =>
+          (
+            value,
+          ): value is string =>
             typeof value === "string",
         )
       : [];
@@ -305,7 +334,8 @@ function memorySharedEntities(
   );
 
   return extractMemoryEntities(memory).filter(
-    (entity) => topicEntities.has(entity),
+    (entity) =>
+      topicEntities.has(entity),
   );
 }
 
@@ -317,10 +347,14 @@ function memoryTitleLikeSimilarity(
   },
 ): number {
   /*
-   * Memory currently stores summary/topicKey rather than a dedicated
-   * title field. Compare the candidate title against both.
+   * Memory currently stores summary/topicKey
+   * rather than a dedicated title field.
+   *
+   * Compare the candidate title against both.
    */
-  const candidateWords = getWords(topic.title);
+  const candidateWords = getWords(
+    topic.title,
+  );
 
   const memoryText =
     `${memory.topicKey} ${memory.summary}`;
@@ -347,14 +381,57 @@ function memoryTitleLikeSimilarity(
     ...memoryWords,
   ]).size;
 
-  return union === 0 ? 0 : intersection / union;
+  return union === 0
+    ? 0
+    : intersection / union;
+}
+
+type MemorySource = {
+  url?: unknown;
+  title?: unknown;
+  sourceName?: unknown;
+};
+
+function hasExactMemoryUrl(
+  candidateUrl: string,
+  memorySources: unknown,
+): boolean {
+  if (
+    !candidateUrl ||
+    !Array.isArray(memorySources)
+  ) {
+    return false;
+  }
+
+  return memorySources.some(
+    (source: unknown) => {
+      if (
+        !source ||
+        typeof source !== "object"
+      ) {
+        return false;
+      }
+
+      const value =
+        source as MemorySource;
+
+      return (
+        typeof value.url === "string" &&
+        normalizeUrl(value.url) ===
+          candidateUrl
+      );
+    },
+  );
 }
 
 async function findMemoryMatches(
   topic: EnrichedTopic,
+  agentId: string,
 ): Promise<{
   memoryId: string;
-  decision: "DUPLICATE" | "FOLLOW_UP";
+  decision:
+    | "DUPLICATE"
+    | "FOLLOW_UP";
   reason: string;
   sharedEntities: string[];
   similarity: number;
@@ -363,105 +440,148 @@ async function findMemoryMatches(
     Date.now() - MEMORY_WINDOW_MS,
   );
 
-  const candidateEntities = getTopicEntities(topic);
+  const candidateUrl =
+    normalizeUrl(topic.url);
 
   /*
-   * First query by entity because this is exactly what the GIN index
-   * is intended to support.
+   * ============================================================
+   * PASS 1: EXACT URL HISTORY
+   * ============================================================
    *
-   * If there are no entities, fall back to recent memory rows for
-   * title comparison.
+   * Exact URL history is checked independently from
+   * short-term memory.
+   *
+   * If this agent has already published this exact
+   * article URL, it must never be published again
+   * simply because the short-term memory expired.
+   *
+   * We intentionally do NOT filter by expiresAt
+   * or createdAt here.
+   */
+  const exactUrlMemories =
+    await prisma.memory.findMany({
+      where: {
+        agentId,
+      },
+      select: {
+        id: true,
+        entities: true,
+        entitiesRaw: true,
+        sources: true,
+        lastPublishedAt: true,
+      },
+      orderBy: {
+        lastPublishedAt: "desc",
+      },
+      take: 500,
+    });
+
+  for (const memory of exactUrlMemories) {
+    if (
+      hasExactMemoryUrl(
+        candidateUrl,
+        memory.sources,
+      )
+    ) {
+      return {
+  memoryId: memory.id,
+  decision: "FOLLOW_UP",
+  reason: "memory_exact_url_match",
+  sharedEntities: [],
+  similarity: 1,
+};
+    }
+  }
+
+  /*
+   * ============================================================
+   * PASS 2: RECENT MEMORY FOR FUZZY MATCHING
+   * ============================================================
+   *
+   * Fuzzy matching remains limited to recent memory.
+   * This prevents an old story from permanently blocking
+   * legitimate future coverage.
    */
   const memories =
-    candidateEntities.length > 0
-      ? await prisma.memory.findMany({
-          where: {
-            expiresAt: {
-              gt: new Date(),
-            },
-            createdAt: {
-              gte: cutoff,
-            },
-            entities: {
-              hasSome: candidateEntities,
-            },
-          },
-          select: {
-            id: true,
-            summary: true,
-            topicKey: true,
-            entities: true,
-            entitiesRaw: true,
-            decision: true,
-            lastPublishedAt: true,
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 100,
-        })
-      : await prisma.memory.findMany({
-          where: {
-            expiresAt: {
-              gt: new Date(),
-            },
-            createdAt: {
-              gte: cutoff,
-            },
-          },
-          select: {
-            id: true,
-            summary: true,
-            topicKey: true,
-            entities: true,
-            entitiesRaw: true,
-            decision: true,
-            lastPublishedAt: true,
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 100,
-        });
+    await prisma.memory.findMany({
+      where: {
+        agentId,
+        expiresAt: {
+          gt: new Date(),
+        },
+        createdAt: {
+          gte: cutoff,
+        },
+      },
+      select: {
+        id: true,
+        summary: true,
+        topicKey: true,
+        entities: true,
+        entitiesRaw: true,
+        sources: true,
+        decision: true,
+        lastPublishedAt: true,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 500,
+    });
 
+  /*
+   * ============================================================
+   * PASS 3: TITLE / ENTITY MATCHING
+   * ============================================================
+   */
   for (const memory of memories) {
-    const shared = memorySharedEntities(
-      topic,
-      memory,
-    );
+    const shared =
+      memorySharedEntities(
+        topic,
+        memory,
+      );
 
     const similarity =
-      memoryTitleLikeSimilarity(topic, memory);
+      memoryTitleLikeSimilarity(
+        topic,
+        memory,
+      );
 
     /*
-     * Exact/high similarity is a duplicate regardless of whether
-     * there are strong entities.
+     * High title similarity is a hard duplicate.
      */
-    if (similarity >= TITLE_DUPLICATE_THRESHOLD) {
+    if (
+      similarity >=
+      TITLE_DUPLICATE_THRESHOLD
+    ) {
       return {
         memoryId: memory.id,
         decision: "DUPLICATE",
-        reason: "memory_high_title_similarity",
+        reason:
+          "memory_high_title_similarity",
         sharedEntities: shared,
         similarity,
       };
     }
 
     /*
-     * Shared strong entity + modest similarity means this is the
-     * same story family.
+     * Shared strong entity + modest title
+     * similarity means the topic belongs to
+     * the same story family.
      *
-     * It may be a duplicate or a legitimate follow-up. The editorial
-     * stage will make that final determination.
+     * Material-delta analysis decides whether
+     * it is actually a legitimate follow-up.
      */
     if (
       shared.length > 0 &&
-      similarity >= ENTITY_TITLE_THRESHOLD
+      similarity >=
+        ENTITY_TITLE_THRESHOLD
     ) {
       return {
         memoryId: memory.id,
         decision: "FOLLOW_UP",
-        reason: "memory_shared_entity_and_title_similarity",
+        reason:
+          "memory_shared_entity_and_title_similarity",
         sharedEntities: shared,
         similarity,
       };
@@ -477,20 +597,35 @@ async function dedupeInBatch(
   const result: EnrichedTopic[] = [];
 
   for (const topic of topics) {
-    const duplicateIndex = result.findIndex(
-      (existing) =>
-        isSameStory(existing, topic).duplicate,
-    );
+    const duplicateIndex =
+      result.findIndex(
+        (existing) =>
+          isSameStory(
+            existing,
+            topic,
+          ).duplicate,
+      );
 
     if (duplicateIndex === -1) {
       result.push(topic);
       continue;
     }
 
-    const existing = result[duplicateIndex];
+    const existing =
+      result[duplicateIndex];
 
-    if (isBetterTopic(topic, existing)) {
-      result[duplicateIndex] = topic;
+    /*
+     * If two sources report the same story,
+     * keep the better source.
+     */
+    if (
+      isBetterTopic(
+        topic,
+        existing,
+      )
+    ) {
+      result[duplicateIndex] =
+        topic;
     }
   }
 
@@ -499,23 +634,39 @@ async function dedupeInBatch(
 
 export async function dedupeTopics(
   topics: EnrichedTopic[],
+  agentId: string,
 ): Promise<DedupedTopic[]> {
   /*
-   * Stage 1:
-   * Cross-source/in-batch deduplication.
+   * ============================================================
+   * STAGE 1
+   * ============================================================
+   *
+   * Cross-source and in-batch deduplication.
    */
-  const uniqueBatch = await dedupeInBatch(topics);
+  const uniqueBatch =
+    await dedupeInBatch(topics);
 
   const result: DedupedTopic[] = [];
 
   /*
-   * Stage 2:
+   * ============================================================
+   * STAGE 2
+   * ============================================================
+   *
    * Cross-run memory deduplication.
    */
   for (const topic of uniqueBatch) {
     const memoryMatch =
-      await findMemoryMatches(topic);
+      await findMemoryMatches(
+        topic,
+        agentId,
+      );
 
+    /*
+     * No previous memory match.
+     *
+     * This is a genuinely new candidate.
+     */
     if (!memoryMatch) {
       result.push({
         ...topic,
@@ -528,27 +679,36 @@ export async function dedupeTopics(
       continue;
     }
 
-    if (memoryMatch.decision === "DUPLICATE") {
-      /*
-       * Hard duplicate.
-       *
-       * Do not send it further down the expensive pipeline.
-       */
+    /*
+     * Hard duplicate.
+     *
+     * Do not send it through the expensive
+     * editorial/evidence/generation pipeline.
+     */
+    if (
+      memoryMatch.decision ===
+      "DUPLICATE"
+    ) {
       continue;
     }
 
     /*
-     * Same story family but potentially new information.
+     * Same story family but potentially new
+     * information.
      *
-     * Keep it alive and explicitly mark it so editorial judgment can
-     * determine whether there is a genuine delta.
+     * Keep it alive so the material-delta
+     * stage can decide whether it is a real
+     * follow-up.
      */
     result.push({
       ...topic,
       dedupe: {
-        decision: "FOLLOW_UP_CANDIDATE",
-        duplicateOf: memoryMatch.memoryId,
-        reason: memoryMatch.reason,
+        decision:
+          "FOLLOW_UP_CANDIDATE",
+        duplicateOf:
+          memoryMatch.memoryId,
+        reason:
+          memoryMatch.reason,
       },
     });
   }

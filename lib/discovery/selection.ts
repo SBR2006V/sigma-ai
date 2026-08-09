@@ -1,21 +1,24 @@
 import type { EditorialTopic } from "./editorial";
+import type { EvidenceCheckedTopic } from "./evidence";
 
 export type SelectionDecision =
   | "SELECTED"
   | "HELD"
   | "REJECTED";
 
-export type SelectedTopic = EditorialTopic & {
- selection: {
+export type SelectedTopic = EvidenceCheckedTopic & {
+  selection: {
     decision: SelectionDecision;
     rank: number;
     reason: string;
   };
 };
 
-const MIN_EDITORIAL_SCORE = 45;
+const MIN_EDITORIAL_SCORE = 55;
 
-function getSelectionReason(topic: EditorialTopic): string {
+function getSelectionReason(
+  topic: EditorialTopic,
+): string {
   const reasons: string[] = [];
 
   if (topic.editorial.score >= 70) {
@@ -36,7 +39,8 @@ function getSelectionReason(topic: EditorialTopic): string {
 
   if (
     topic.materialDelta &&
-    topic.materialDelta.decision === "MATERIAL_DELTA"
+    topic.materialDelta.decision ===
+      "MATERIAL_DELTA"
   ) {
     reasons.push("materially new information");
   }
@@ -44,14 +48,38 @@ function getSelectionReason(topic: EditorialTopic): string {
   return reasons.join("; ");
 }
 
-function getDecision(topic: EditorialTopic): SelectionDecision {
-  if (topic.editorial.score < MIN_EDITORIAL_SCORE) {
+function getDecision(
+  topic: EvidenceCheckedTopic,
+): SelectionDecision {
+  /*
+   * Evidence is checked before selection.
+   *
+   * A topic with insufficient evidence must never
+   * be marked SELECTED for grounded generation.
+   */
+  if (
+    topic.evidence.decision === "INSUFFICIENT"
+  ) {
+    return "HELD";
+  }
+
+  /*
+   * Editorial threshold.
+   */
+  if (
+    topic.editorial.score < MIN_EDITORIAL_SCORE
+  ) {
     return "REJECTED";
   }
 
+  /*
+   * Follow-up candidates require actual material delta.
+   */
   if (
-    topic.dedupe.decision === "FOLLOW_UP_CANDIDATE" &&
-    topic.materialDelta?.decision !== "MATERIAL_DELTA"
+    topic.dedupe.decision ===
+      "FOLLOW_UP_CANDIDATE" &&
+    topic.materialDelta?.decision !==
+      "MATERIAL_DELTA"
   ) {
     return "HELD";
   }
@@ -59,11 +87,34 @@ function getDecision(topic: EditorialTopic): SelectionDecision {
   return "SELECTED";
 }
 
+function getHeldReason(
+  topic: EvidenceCheckedTopic,
+): string {
+  if (
+    topic.evidence.decision === "INSUFFICIENT"
+  ) {
+    return `insufficient evidence: ${topic.evidence.reason}`;
+  }
+
+  if (
+    topic.dedupe.decision ===
+      "FOLLOW_UP_CANDIDATE" &&
+    topic.materialDelta?.decision !==
+      "MATERIAL_DELTA"
+  ) {
+    return "follow-up requires material delta";
+  }
+
+  return "held for further review";
+}
+
 export function selectTopics(
-  topics: EditorialTopic[],
+  topics: EvidenceCheckedTopic[],
 ): SelectedTopic[] {
   const ranked = [...topics].sort(
-    (a, b) => b.editorial.score - a.editorial.score,
+    (a, b) =>
+      b.editorial.score -
+      a.editorial.score,
   );
 
   return ranked.map((topic, index) => {
@@ -78,7 +129,7 @@ export function selectTopics(
           decision === "REJECTED"
             ? `editorial score below ${MIN_EDITORIAL_SCORE}`
             : decision === "HELD"
-              ? "follow-up requires material delta"
+              ? getHeldReason(topic)
               : getSelectionReason(topic),
       },
     };

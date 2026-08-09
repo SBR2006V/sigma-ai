@@ -1,4 +1,4 @@
-import type { SelectedTopic } from "./selection";
+import type { EditorialTopic } from "./editorial";
 
 export type EvidenceDecision =
   | "SUFFICIENT"
@@ -10,7 +10,7 @@ export type EvidenceResult = {
   evidenceScore: number;
 };
 
-export type EvidenceCheckedTopic = SelectedTopic & {
+export type EvidenceCheckedTopic = EditorialTopic & {
   evidence: EvidenceResult;
 };
 
@@ -22,8 +22,8 @@ function isUrlOnly(text: string): boolean {
   }
 
   const withoutUrls = value
-    .replace(/https?:\/\/\S+/gi, "")
-    .replace(/\[[^\]]+\]\([^)]+\)/g, "")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\[[^\]]+\]\([^)]+\)/g, " ")
     .trim();
 
   return withoutUrls.length === 0;
@@ -41,14 +41,16 @@ function countWords(text: string): number {
 }
 
 export function evaluateEvidence(
-  topic: SelectedTopic,
+  topic: EditorialTopic,
 ): EvidenceResult {
   let score = 0;
 
   const titleWords = countWords(topic.title);
   const summaryWords = countWords(topic.summary);
 
-  // A meaningful title provides some evidence.
+  /*
+   * A meaningful title provides some evidence.
+   */
   if (titleWords >= 6) {
     score += 2;
   }
@@ -57,7 +59,9 @@ export function evaluateEvidence(
     score += 1;
   }
 
-  // A real summary is the strongest deterministic signal.
+  /*
+   * A real summary is the strongest deterministic signal.
+   */
   if (summaryWords >= 15) {
     score += 3;
   }
@@ -66,35 +70,51 @@ export function evaluateEvidence(
     score += 2;
   }
 
-  // Primary sources are more trustworthy, but source type
-  // alone is never enough to establish sufficient evidence.
+  /*
+   * Primary sources are more trustworthy,
+   * but source type alone is never enough.
+   */
   if (topic.sourceType === "PRIMARY") {
     score += 1;
   }
 
-  // Known entities provide additional grounding.
+  /*
+   * Known entities provide additional grounding.
+   */
   if (topic.entities.known.length > 0) {
-    score += Math.min(2, topic.entities.known.length);
+    score += Math.min(
+      2,
+      topic.entities.known.length,
+    );
   }
 
-  // A summary containing only a URL is not evidence.
+  /*
+   * A summary containing only a URL is not evidence.
+   */
   if (isUrlOnly(topic.summary)) {
     return {
       decision: "INSUFFICIENT",
-      reason: "summary_contains_no_substantive_evidence",
+      reason:
+        "summary_contains_no_substantive_evidence",
       evidenceScore: score,
     };
   }
 
-  // We require actual textual evidence.
+  /*
+   * We require actual textual evidence.
+   */
   if (summaryWords < 15) {
     return {
       decision: "INSUFFICIENT",
-      reason: "summary_too_short_for_grounded_generation",
+      reason:
+        "summary_too_short_for_grounded_generation",
       evidenceScore: score,
     };
   }
 
+  /*
+   * Minimum deterministic evidence threshold.
+   */
   if (score < 5) {
     return {
       decision: "INSUFFICIENT",
@@ -111,7 +131,7 @@ export function evaluateEvidence(
 }
 
 export function filterEvidence(
-  topics: SelectedTopic[],
+  topics: EditorialTopic[],
 ): EvidenceCheckedTopic[] {
   return topics.map((topic) => ({
     ...topic,

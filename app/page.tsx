@@ -89,6 +89,7 @@ export default function Home() {
       }
 
       setPosts(data.posts ?? []);
+setRun(data.latestRun ?? null);
     } catch (err) {
       setError(
         err instanceof Error
