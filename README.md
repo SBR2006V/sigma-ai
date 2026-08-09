@@ -1,36 +1,141 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SigmaAI
 
-## Getting Started
+### Autonomous AI Technology Publisher
 
-First, run the development server:
+SigmaAI is an autonomous AI technology publisher built for the ABTalks Autonomous AI Creator hackathon.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Instead of waiting for a user prompt, SigmaAI continuously discovers technology topics, evaluates their editorial value, checks previous publications through persistent memory, generates educational content, and publishes only topics that pass its decision pipeline.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## What SigmaAI Does
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+SigmaAI follows an autonomous pipeline:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Discovery
+→ Deduplication
+→ Material Delta
+→ Editorial Scoring
+→ Selection
+→ Evidence Check
+→ Generation
+→ Memory
+→ Publication
 
-## Learn More
+The system also records why topics were rejected, held, selected, and published.
 
-To learn more about Next.js, take a look at the following resources:
+## Key Features
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Autonomous technology topic discovery
+- Multiple RSS/news sources
+- Topic normalization and deduplication
+- Material-delta detection for follow-up stories
+- Editorial scoring and rejection
+- Evidence checking
+- AI-generated educational posts
+- Persistent memory using PostgreSQL
+- Duplicate publication prevention
+- Transparent publishing rationale
+- Activity logs
+- Production dashboard
+- Scheduled autonomous execution
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Architecture
 
-## Deploy on Vercel
+- Next.js 16
+- React
+- TypeScript
+- Prisma
+- PostgreSQL / Supabase
+- Groq API
+- Vercel
+- RSS / web sources
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Database
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+SigmaAI uses PostgreSQL through Prisma.
+
+Core entities include:
+
+- Agent
+- AgentRun
+- Topic
+- Post
+- Memory
+- ActivityLog
+- KnownEntity
+
+## API
+
+### Initialize Agent
+
+`POST /api/agent/init`
+
+Creates or initializes the SigmaAI agent.
+
+### Run Agent
+
+`POST /api/agent/run`
+
+Executes an autonomous discovery and publishing cycle.
+
+### Feed
+
+`GET /api/agent/feed`
+
+Returns the latest published intelligence.
+
+## Autonomous Decision Making
+
+SigmaAI does not generate a post for every discovered topic.
+
+Each candidate passes through multiple stages:
+
+1. Discovery
+2. Deduplication
+3. Material-delta analysis
+4. Editorial evaluation
+5. Evidence validation
+6. Selection
+7. Content generation
+8. Memory creation
+9. Publication
+
+Weak or repetitive topics are rejected or held instead of being automatically published.
+
+## Transparency
+
+Every important decision is recorded through activity logs and exposed through the dashboard.
+
+The dashboard shows:
+
+- Topics discovered
+- Topics rejected
+- Topics held
+- Topics published
+- Selected topic
+- Editorial rationale
+- Evidence status
+- Why the topic was selected
+- Why it is relevant now
+- Autonomous pipeline stages
+
+## Live Demo
+
+https://sigma-ai-psi.vercel.app/
+
+## Repository
+
+https://github.com/SBR2006V/sigma-ai
+
+## AI-Assisted Development
+
+SigmaAI was developed using AI-assisted programming and reasoning.
+
+AI assistance was used for architecture, implementation, debugging, testing, prompt design, database design, deployment troubleshooting, and iterative refinement.
+
+See `PROMPTS.md` for the AI-usage log.
+
+## Hackathon
+
+Built for:
+
+**ABTalks Hackathon - Autonomous AI Creator**
